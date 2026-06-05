@@ -86,7 +86,7 @@ app.use((req, res) => {
 
 // Start Server
 const server = app.listen(PORT, () => {
-    console.log(`🚀 Server running on port ${PORT}`)
+    console.log(`🚀 Server running at http://localhost:${PORT}`)
 })
 
 // Socket.io
