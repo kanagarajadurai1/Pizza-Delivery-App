@@ -1,18 +1,20 @@
 require('dotenv').config()
+
 const express = require('express')
 const app = express()
-const ejs = require('ejs')
 const path = require('path')
 const expressLayout = require('express-ejs-layouts')
-const PORT = process.env.PORT || 3300
 const mongoose = require('mongoose')
 const session = require('express-session')
 const flash = require('express-flash')
 const MongoDbStore = require('connect-mongo')(session)
 const passport = require('passport')
 const Emitter = require('events')
+const socketio = require('socket.io')
 
-// Database connection
+const PORT = process.env.PORT || 3300
+
+// Database Connection
 mongoose.connect(process.env.MONGO_CONNECTION_URL, {
     useNewUrlParser: true,
     useUnifiedTopology: true
@@ -21,56 +23,55 @@ mongoose.connect(process.env.MONGO_CONNECTION_URL, {
 const connection = mongoose.connection
 
 connection.once('open', () => {
-    console.log('Database connected...')
+    console.log('✅ MongoDB Connected Successfully')
 })
 
 connection.on('error', (err) => {
-    console.error('MongoDB Error:', err)
+    console.error('❌ MongoDB Connection Failed')
+    console.error(err)
 })
 
-// Session store
+// Session Store
 let mongoStore = new MongoDbStore({
     mongooseConnection: connection,
     collection: 'sessions'
 })
 
-// Event emitter
+// Event Emitter
 const eventEmitter = new Emitter()
 app.set('eventEmitter', eventEmitter)
 
-// Session config
+// Session Config
 app.use(session({
     secret: process.env.COOKIE_SECRET,
     resave: false,
-    store: mongoStore,
     saveUninitialized: false,
+    store: mongoStore,
     cookie: {
         maxAge: 1000 * 60 * 60 * 24
     }
 }))
 
-// Passport config
+// Passport Config
 const passportInit = require('./app/config/passport')
 passportInit(passport)
 
 app.use(passport.initialize())
 app.use(passport.session())
-
 app.use(flash())
 
-// Assets
-app.use(express.static('public'))
+// Middleware
 app.use(express.urlencoded({ extended: false }))
 app.use(express.json())
+app.use(express.static('public'))
 
-// Global middleware
 app.use((req, res, next) => {
     res.locals.session = req.session
     res.locals.user = req.user
     next()
 })
 
-// Template engine
+// View Engine
 app.use(expressLayout)
 app.set('views', path.join(__dirname, '/resources/views'))
 app.set('view engine', 'ejs')
@@ -78,76 +79,31 @@ app.set('view engine', 'ejs')
 // Routes
 require('./routes/web')(app)
 
-// 404 handler
+// 404 Page
 app.use((req, res) => {
     res.status(404).render('errors/404')
 })
 
-// Server with port-retry and clear startup URL
-const DEFAULT_PORT = parseInt(process.env.PORT, 10) || 3300
-const { exec } = require('child_process')
+// Start Server
+const server = app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`)
+})
 
-function openInChromeOrDefault(url) {
-    if (process.env.NO_BROWSER) return
-    if (process.platform === 'win32') {
-        // Try to open Chrome, fallback to default browser
-        exec(`start "" chrome "${url}"`, (err) => {
-            if (err) exec(`start "" "${url}"`)
-        })
-    } else if (process.platform === 'darwin') {
-        exec(`open -a "Google Chrome" "${url}"`, (err) => {
-            if (err) exec(`open "${url}"`)
-        })
-    } else {
-        exec(`google-chrome "${url}"`, (err) => {
-            if (err) exec(`xdg-open "${url}"`)
-        })
-    }
-}
+// Socket.io
+const io = socketio(server)
 
-function startServer(port = DEFAULT_PORT, retries = 10) {
-    const server = app.listen(port, () => {
-        console.log(`Server running: http://localhost:${port}`)
+io.on('connection', (socket) => {
+
+    socket.on('join', (orderId) => {
+        socket.join(orderId)
     })
 
-    server.on('error', (err) => {
-        if (err && err.code === 'EADDRINUSE' && retries > 0) {
-            console.warn(`Port ${port} in use, trying ${port + 1}...`)
-            setTimeout(() => startServer(port + 1, retries - 1), 200)
-        } else {
-            console.error('Server failed to start:', err)
-            process.exit(1)
-        }
-    })
+})
 
-    server.on('listening', () => {
-        // Initialize socket.io after server is bound
-        const io = require('socket.io')(server)
+eventEmitter.on('orderUpdated', (data) => {
+    io.to(`order_${data.id}`).emit('orderUpdated', data)
+})
 
-        io.on('connection', (socket) => {
-            socket.on('join', (orderId) => {
-                socket.join(orderId)
-            })
-        })
-
-        eventEmitter.on('orderUpdated', (data) => {
-            io.to(`order_${data.id}`).emit('orderUpdated', data)
-        })
-
-        eventEmitter.on('orderPlaced', (data) => {
-            io.to('adminRoom').emit('orderPlaced', data)
-        })
-
-        // Open the app in Chrome (or fallback) when server starts
-        const url = `http://localhost:${port}`
-        try {
-            openInChromeOrDefault(url)
-        } catch (err) {
-            console.warn('Unable to open browser automatically:', err.message)
-        }
-    })
-
-    return server
-}
-
-startServer()
+eventEmitter.on('orderPlaced', (data) => {
+    io.to('adminRoom').emit('orderPlaced', data)
+})
